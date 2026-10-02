@@ -1,0 +1,84 @@
+---
+author: Chanice McKenzie
+output: html_document
+title: DATA 607 Week 5B Approach
+---
+
+# Introduction
+
+This project will build on the tournament data used in Project 1 to
+evaluate how each chess player performed relative to what their
+pre-tournament rating would predict. Rather than comparing players only
+by their final tournament points, I will calculate an expected score for
+each player based on the rating differences between that player and each
+opponent. I will then compare expected and actual scores to identify the
+five players who most overperformed and the five who most underperformed
+expectations.
+
+# Planned Approach
+
+I will begin with the cleaned tournament information from Project 1,
+including each player's pair number, name, pre-rating, actual tournament
+score, and opponents. Because expected performance depends on each
+individual matchup, I will match every opponent pair number back to that
+opponent's pre-tournament rating rather than relying only on the
+player's average opponent rating.
+
+For each game, I will calculate the rating difference between the player
+and the opponent and convert that difference into an expected scoring
+probability using a documented ELO method. I plan to use a consistent
+expected-score calculation for every matchup and cite the source used
+for the formula. The expected probabilities from all of a player's games
+will then be added together to produce that player's expected tournament
+score.
+
+Next, I will compare each player's actual tournament score with the
+calculated expected score. I will define the performance difference as
+actual score minus expected score. A positive difference will indicate
+that a player scored more points than expected, while a negative
+difference will indicate that the player scored fewer points than
+expected. I will sort these differences to identify the five largest
+positive values and the five largest negative values.
+
+The final analysis will present the overperformers and underperformers
+in tables and explain what the difference between actual and expected
+score represents. I will also validate several intermediate calculations
+manually so that the final rankings are not based on an
+opponent-matching or rating-calculation error.
+
+Before interpreting the final results, I will check that each player's
+expected tournament score is within a reasonable range based on the
+number of games played. I will also manually verify selected
+player-opponent matchups by comparing the player's rating, opponent
+rating, rating difference, and expected probability. Finally, I will
+confirm that the calculated performance difference is consistently
+defined as actual score minus expected score before selecting the top
+five overperformers and underperformers.
+
+# Anticipated Data Challenges
+
+One challenge will be correctly connecting every opponent number in the
+tournament record to the appropriate player's pre-rating. An incorrect
+match would affect the expected score for that game and therefore the
+player's total expected score. I will check that opponent identifiers
+exist in the player table and that the number of matched games is
+consistent with the tournament records.
+
+Another issue is that the tournament file contains round entries that
+may not represent a normal game against a rated opponent, such as byes
+or other special round codes. These records will need to be identified
+so that they are not accidentally treated as opponent pair numbers. I
+will determine how these cases should contribute to the actual and
+expected tournament scores and document that decision in the final
+report.
+
+The rating data may also contain formatting such as provisional-rating
+indicators. I will need to make sure the numeric pre-rating is extracted
+consistently before calculating rating differences.
+
+Finally, different ELO implementations can produce slightly different
+expected probabilities. I will therefore use one reasonably sourced
+method consistently for all players, clearly document the formula or
+probability conversion used, and cite the source. This will make the
+calculations reproducible and make it clear how the expected scores were
+produced.
