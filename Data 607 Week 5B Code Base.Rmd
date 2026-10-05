@@ -1,0 +1,400 @@
+---
+author: Chanice McKenzie
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+title: "DATA 607 Week 5B Code Base - Chess ELO Calculations"
+---
+
+# Introduction
+
+This analysis builds on the chess tournament data from Project 1 to compare each player's actual tournament score with the score that would be expected from the rating differences between that player and each opponent. The business question is: **Which players performed most above or below what their pre-tournament ratings predicted?** I use the standard Elo expected-score formula and compare the summed expected score with each player's official tournament score.
+
+For the expected-score calculation, I use the logistic Elo formula \(E_A = 1/(1 + 10^{(R_B-R_A)/400})\), where \(R_A\) is the player's rating and \(R_B\) is the opponent's rating. FIDE's rating regulations similarly determine a scoring probability from the rating difference for each rated game: [FIDE Rating Regulations](https://handbook.fide.com/chapter/B022024). The logistic formula used here is also described in this [Elo rating system reference](https://en.wikipedia.org/wiki/Elo_rating_system).
+
+# Load Packages
+
+I use `tidyverse` for importing, parsing, joining, reshaping, and summarizing the tournament data, and `knitr` for formatted tables.
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(knitr)
+
+options(dplyr.summarise.inform = FALSE)
+```
+
+# Import the Tournament Data
+
+To make the analysis reproducible, the tournament file is read directly from the public GitHub repository used for Project 1 rather than from a file stored on my computer.
+
+```{r import-data}
+data_url <- "https://raw.githubusercontent.com/chanicemcken/Data-607-Project-1/main/tournamentinfo.txt"
+
+tournament_raw <- readLines(data_url, warn = FALSE)
+
+head(tournament_raw, 10)
+```
+
+# Parse the Player Records
+
+The tournament file stores each player across two lines. The first line contains pair number, player name, total score, and seven round results. The second line contains state and rating information. I identify the 64 player rows, match each one to the following detail row, and extract the fields needed for the Elo analysis.
+
+```{r parse-player-records}
+player_idx <- which(str_detect(
+  tournament_raw,
+  "^\\s*\\d+\\s*\\|"
+))
+
+stopifnot(length(player_idx) == 64)
+
+player_lines <- tournament_raw[player_idx]
+detail_lines <- tournament_raw[player_idx + 1]
+
+player_fields <- str_split_fixed(player_lines, "\\|", 11)
+detail_fields <- str_split_fixed(detail_lines, "\\|", 11)
+
+players <- tibble(
+  Pair_Number = as.integer(str_trim(player_fields[, 1])),
+  Player_Name = str_squish(player_fields[, 2]),
+  Actual_Score = as.numeric(str_trim(player_fields[, 3])),
+  State = str_trim(detail_fields[, 1]),
+  Pre_Rating = as.integer(
+    str_extract(detail_fields[, 2], "(?<=R:)\\s*\\d+")
+  ),
+  Round_1 = str_trim(player_fields[, 4]),
+  Round_2 = str_trim(player_fields[, 5]),
+  Round_3 = str_trim(player_fields[, 6]),
+  Round_4 = str_trim(player_fields[, 7]),
+  Round_5 = str_trim(player_fields[, 8]),
+  Round_6 = str_trim(player_fields[, 9]),
+  Round_7 = str_trim(player_fields[, 10])
+)
+
+kable(
+  head(players, 10),
+  caption = "First 10 Parsed Player Records"
+)
+```
+
+The numeric extraction of `Pre_Rating` intentionally keeps the rating itself while dropping provisional-rating text that may follow it. This prevents values such as provisional ratings from being treated as nonnumeric.
+
+# Reshape the Round Results
+
+The seven rounds are stored in separate columns, so I transform them into long format. Each row below represents one player-round observation. The result code (`W`, `D`, `L`, `H`, or `U`) is separated from the opponent pair number.
+
+```{r reshape-rounds}
+games <- players %>%
+  pivot_longer(
+    cols = starts_with("Round_"),
+    names_to = "Round",
+    values_to = "Round_Result"
+  ) %>%
+  mutate(
+    Round = as.integer(str_remove(Round, "Round_")),
+    Result = str_extract(Round_Result, "^[WDLHU]"),
+    Opponent_Pair = as.integer(str_extract(Round_Result, "\\d+")),
+    Game_Score = case_when(
+      Result == "W" ~ 1,
+      Result == "D" ~ 0.5,
+      Result == "L" ~ 0,
+      TRUE ~ NA_real_
+    )
+  )
+
+kable(
+  head(games, 14),
+  caption = "Tournament Results in Long Format"
+)
+```
+
+Special entries such as `H` and `U` do not contain a rated opponent pair number, so they are not treated as normal opponent matchups. I retain them in the data for validation, but only rounds with a valid opponent number are used to calculate Elo expected score.
+
+# Match Opponents to Their Pre-Ratings
+
+The expected score for a game depends on both players' ratings. I therefore create a lookup table using pair number and pre-rating, then join it back to each player's opponent number.
+
+```{r opponent-matching}
+opponent_lookup <- players %>%
+  select(
+    Opponent_Pair = Pair_Number,
+    Opponent_Name = Player_Name,
+    Opponent_Rating = Pre_Rating
+  )
+
+rated_games <- games %>%
+  filter(!is.na(Opponent_Pair)) %>%
+  left_join(opponent_lookup, by = "Opponent_Pair")
+
+opponent_validation <- rated_games %>%
+  summarise(
+    Rated_Game_Records = n(),
+    Missing_Opponent_Matches = sum(is.na(Opponent_Rating))
+  )
+
+kable(
+  opponent_validation,
+  caption = "Opponent Matching Validation"
+)
+
+stopifnot(opponent_validation$Missing_Opponent_Matches == 0)
+```
+
+# Validate the Project 1 Opponent Matching
+
+Before calculating expected scores, I validate the opponent matching using Gary Hua from Project 1. His listed opponents are pair numbers 39, 21, 18, 14, 7, 12, and 4. Their average pre-rating should be approximately 1605.
+
+```{r gary-validation}
+gary_check <- rated_games %>%
+  filter(Player_Name == "GARY HUA") %>%
+  select(
+    Round,
+    Player_Name,
+    Pre_Rating,
+    Opponent_Pair,
+    Opponent_Name,
+    Opponent_Rating
+  )
+
+kable(
+  gary_check,
+  caption = "Gary Hua Opponent Matching Check"
+)
+
+gary_average <- mean(gary_check$Opponent_Rating)
+
+tibble(
+  Validation = "Gary Hua average opponent pre-rating",
+  Calculated_Value = round(gary_average, 2),
+  Expected_Approximate_Value = 1605
+) %>%
+  kable(caption = "Project 1 Validation Check")
+```
+
+This check is important because an incorrect opponent match would affect the expected probability for a game and therefore the player's final expected tournament score.
+
+# Calculate Elo Expected Score for Each Game
+
+For each rated matchup, I calculate the player's expected score using:
+
+\[
+E_A = \frac{1}{1 + 10^{(R_B-R_A)/400}}
+\]
+
+An expected value near 0.50 indicates an approximately even matchup. A value above 0.50 means the player was favored based on pre-tournament rating, while a value below 0.50 means the opponent was favored.
+
+```{r calculate-game-expectations}
+elo_expected <- function(player_rating, opponent_rating) {
+  1 / (1 + 10 ^ ((opponent_rating - player_rating) / 400))
+}
+
+rated_games <- rated_games %>%
+  mutate(
+    Rating_Difference = Pre_Rating - Opponent_Rating,
+    Expected_Score_Game = elo_expected(
+      Pre_Rating,
+      Opponent_Rating
+    )
+  )
+
+kable(
+  rated_games %>%
+    select(
+      Player_Name,
+      Round,
+      Pre_Rating,
+      Opponent_Name,
+      Opponent_Rating,
+      Rating_Difference,
+      Expected_Score_Game
+    ) %>%
+    head(12),
+  digits = 3,
+  caption = "Example Elo Expected-Score Calculations"
+)
+```
+
+# Calculate Each Player's Expected Tournament Score
+
+A player's expected tournament score is the sum of the expected scores from all rounds with a rated opponent. I then subtract expected score from the official tournament score. Positive values indicate overperformance and negative values indicate underperformance.
+
+Because `H` and `U` entries do not identify a rated opponent, they do not receive an Elo expected-score value. The official tournament score is retained as the assignment's actual-score measure, and the number of rated games is shown so these special cases remain visible when interpreting the results.
+
+```{r player-performance}
+expected_totals <- rated_games %>%
+  group_by(Pair_Number, Player_Name, Pre_Rating) %>%
+  summarise(
+    Rated_Games = n(),
+    Expected_Score = sum(Expected_Score_Game)
+  )
+
+player_performance <- players %>%
+  select(
+    Pair_Number,
+    Player_Name,
+    State,
+    Pre_Rating,
+    Actual_Score
+  ) %>%
+  left_join(
+    expected_totals,
+    by = c("Pair_Number", "Player_Name", "Pre_Rating")
+  ) %>%
+  mutate(
+    Expected_Score = replace_na(Expected_Score, 0),
+    Rated_Games = replace_na(Rated_Games, 0L),
+    Performance_Difference = Actual_Score - Expected_Score
+  ) %>%
+  arrange(desc(Performance_Difference))
+
+kable(
+  player_performance %>%
+    mutate(
+      Expected_Score = round(Expected_Score, 2),
+      Performance_Difference = round(Performance_Difference, 2)
+    ),
+  caption = "Actual and Expected Tournament Scores for All Players"
+)
+```
+
+# Validate Expected-Score Ranges
+
+Each single-game expected score must fall between 0 and 1. A player's total expected score must also fall between 0 and the number of rated games. I check both conditions before ranking the players.
+
+```{r validate-expected-scores}
+validation_checks <- tibble(
+  Check = c(
+    "All game expected scores are between 0 and 1",
+    "All player expected totals are between 0 and rated games",
+    "All 64 tournament players are included"
+  ),
+  Passed = c(
+    all(between(rated_games$Expected_Score_Game, 0, 1)),
+    all(
+      player_performance$Expected_Score >= 0 &
+      player_performance$Expected_Score <= player_performance$Rated_Games
+    ),
+    nrow(player_performance) == 64
+  )
+)
+
+kable(
+  validation_checks,
+  caption = "Expected-Score Validation Checks"
+)
+
+stopifnot(all(validation_checks$Passed))
+```
+
+# Five Players Who Most Overperformed
+
+The five largest positive values of `Performance_Difference` identify the players who scored the most points above their Elo-based expectation.
+
+```{r top-overperformers}
+top_overperformers <- player_performance %>%
+  slice_max(
+    order_by = Performance_Difference,
+    n = 5,
+    with_ties = FALSE
+  ) %>%
+  mutate(
+    Expected_Score = round(Expected_Score, 2),
+    Performance_Difference = round(Performance_Difference, 2)
+  ) %>%
+  select(
+    Player_Name,
+    Pre_Rating,
+    Actual_Score,
+    Expected_Score,
+    Performance_Difference
+  )
+
+kable(
+  top_overperformers,
+  caption = "Five Players Who Most Overperformed Their Expected Score"
+)
+```
+
+# Five Players Who Most Underperformed
+
+The five most negative values identify the players who scored the most points below their Elo-based expectation.
+
+```{r top-underperformers}
+top_underperformers <- player_performance %>%
+  slice_min(
+    order_by = Performance_Difference,
+    n = 5,
+    with_ties = FALSE
+  ) %>%
+  mutate(
+    Expected_Score = round(Expected_Score, 2),
+    Performance_Difference = round(Performance_Difference, 2)
+  ) %>%
+  select(
+    Player_Name,
+    Pre_Rating,
+    Actual_Score,
+    Expected_Score,
+    Performance_Difference
+  )
+
+kable(
+  top_underperformers,
+  caption = "Five Players Who Most Underperformed Their Expected Score"
+)
+```
+
+# Visualize Performance Relative to Expectation
+
+The chart provides an additional way to see how actual tournament performance differs from Elo expectation. Players above zero scored more points than expected, while players below zero scored fewer points than expected.
+
+```{r performance-chart, fig.width=9, fig.height=7}
+player_performance %>%
+  mutate(
+    Player_Name = fct_reorder(
+      Player_Name,
+      Performance_Difference
+    )
+  ) %>%
+  ggplot(
+    aes(
+      x = Performance_Difference,
+      y = Player_Name,
+      fill = Performance_Difference > 0
+    )
+  ) +
+  geom_col(show.legend = FALSE) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(
+    title = "Tournament Performance Relative to Elo Expectation",
+    subtitle = "Actual score minus expected score",
+    x = "Performance Difference (Points)",
+    y = NULL
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 6)
+  )
+```
+
+# Conclusions
+
+This analysis compares tournament results with the scores predicted by each player's pre-tournament rating and the ratings of the opponents they actually faced. The final overperformance and underperformance tables identify the five players with the largest positive and negative differences between actual and expected score.
+
+The results should be interpreted as performance relative to rating-based expectation rather than as a ranking of the strongest players. A lower-rated player can overperform by scoring more points than expected against stronger opponents, while a highly rated player can underperform even with a relatively high tournament score if that score falls below expectation.
+
+A useful extension would be to compare the logistic Elo probabilities used here with FIDE's published scoring-probability table to see whether the choice of implementation changes the top-five rankings. Another extension would be to repeat the analysis across multiple tournaments to determine whether the largest overperformances persist or are specific to this event.
+
+# Reproducibility Information
+
+The analysis reads the tournament text file directly from a public GitHub URL and does not depend on local file paths. The session information below documents the R environment and package versions used when the report is rendered.
+
+```{r session-info}
+sessionInfo()
+```
+# Citations
+
+OpenAI. (2026). ChatGPT (Version 5.6) [Large language model]. https://chat.openai.com. Accessed October 3, 2026.
+
+[LLM Transcript](https://chatgpt.com/share/6ac2f422-e060-83ea-8d4b-81a3f3ad979a)
